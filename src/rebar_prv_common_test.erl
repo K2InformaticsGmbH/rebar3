@@ -8,8 +8,11 @@
 -export([init/1,
          do/1,
          format_error/1]).
-%% exported for test purposes, consider private
--export([compile/2, prepare_tests/1, translate_paths/2]).
+
+-ifdef(TEST).
+%% exported for test purposes
+-export([compile/2, prepare_tests/1, translate_paths/2, maybe_write_coverdata/1]).
+-endif.
 
 -include("rebar.hrl").
 -include_lib("providers/include/providers.hrl").
@@ -135,7 +138,7 @@ cmdopts(State) ->
     {RawOpts, _} = rebar_state:command_parsed_args(State),
     %% filter out opts common_test doesn't know about and convert
     %% to ct acceptable forms
-    transform_opts(RawOpts, []).
+    transform_retry(transform_opts(RawOpts, []), State).
 
 transform_opts([], Acc) -> lists:reverse(Acc);
 transform_opts([{dir, Dirs}|Rest], Acc) ->
@@ -172,8 +175,20 @@ transform_opts([{verbose, _}|Rest], Acc) ->
 transform_opts([Opt|Rest], Acc) ->
     transform_opts(Rest, [Opt|Acc]).
 
+%% @private only retry if specified and if no other spec
+%% is given.
+transform_retry(Opts, State) ->
+    case proplists:get_value(retry, Opts, false) andalso
+         not is_any_defined([spec,dir,suite], Opts) of
+        false ->
+            Opts;
+        true ->
+            Path = filename:join([rebar_dir:base_dir(State), "logs", "retry.spec"]),
+            filelib:is_file(Path) andalso [{spec, Path}|Opts]
+    end.
+
 split_string(String) ->
-    string:tokens(String, [$,]).
+    rebar_string:lexemes(String, [$,]).
 
 cfgopts(State) ->
     case rebar_state:get(State, ct_opts, []) of
@@ -213,10 +228,10 @@ add_hooks(Opts, State) ->
         {false, _} ->
             Opts;
         {true, false} ->
-            [{ct_hooks, [cth_readable_failonly, cth_readable_shell]} | Opts];
+            [{ct_hooks, [cth_readable_failonly, cth_readable_shell, cth_retry]} | Opts];
         {true, {ct_hooks, Hooks}} ->
             %% Make sure hooks are there once only.
-            ReadableHooks = [cth_readable_failonly, cth_readable_shell],
+            ReadableHooks = [cth_readable_failonly, cth_readable_shell, cth_retry],
             NewHooks =  (Hooks -- ReadableHooks) ++ ReadableHooks,
             lists:keyreplace(ct_hooks, 1, Opts, {ct_hooks, NewHooks})
     end.
@@ -684,7 +699,7 @@ format_result({Passed, 0, {0, 0}}) ->
 format_result({Passed, Failed, Skipped}) ->
     Format = [format_failed(Failed), format_skipped(Skipped),
               format_passed(Passed)],
-    ?CONSOLE("~s", [Format]);
+    ?CONSOLE("~ts", [Format]);
 format_result(_Unknown) ->
     %% Happens when CT itself encounters a bug
     ok.
@@ -716,7 +731,8 @@ maybe_write_coverdata(State) ->
         true  -> rebar_state:set(State, cover_enabled, true);
         false -> State
     end,
-    rebar_prv_cover:maybe_write_coverdata(State1, ?PROVIDER).
+    Name = proplists:get_value(cover_export_name, RawOpts, ?PROVIDER),
+    rebar_prv_cover:maybe_write_coverdata(State1, Name).
 
 ct_opts(_State) ->
     [{dir, undefined, "dir", string, help(dir)}, %% comma-separated list
@@ -732,6 +748,7 @@ ct_opts(_State) ->
      {logopts, undefined, "logopts", string, help(logopts)}, %% comma-separated list
      {verbosity, undefined, "verbosity", integer, help(verbosity)}, %% Integer
      {cover, $c, "cover", {boolean, false}, help(cover)},
+     {cover_export_name, undefined, "cover_export_name", string, help(cover_export_name)},
      {repeat, undefined, "repeat", integer, help(repeat)}, %% integer
      {duration, undefined, "duration", string, help(duration)}, % format: HHMMSS
      {until, undefined, "until", string, help(until)}, %% format: YYMoMoDD[HHMMSS]
@@ -751,7 +768,8 @@ ct_opts(_State) ->
      {sname, undefined, "sname", atom, help(sname)},
      {setcookie, undefined, "setcookie", atom, help(setcookie)},
      {sys_config, undefined, "sys_config", string, help(sys_config)}, %% comma-separated list
-     {compile_only, undefined, "compile_only", boolean, help(compile_only)}
+     {compile_only, undefined, "compile_only", boolean, help(compile_only)},
+     {retry, undefined, "retry", boolean, help(retry)}
     ].
 
 help(compile_only) ->
@@ -784,6 +802,8 @@ help(verbosity) ->
     "Verbosity";
 help(cover) ->
     "Generate cover data";
+help(cover_export_name) ->
+    "Base name of the coverdata file to write";
 help(repeat) ->
     "How often to repeat tests";
 help(duration) ->
@@ -820,5 +840,7 @@ help(sname) ->
     "Gives a short name to the node";
 help(setcookie) ->
     "Sets the cookie if the node is distributed";
+help(retry) ->
+    "Experimental feature. If any specification for previously failing test is found, runs them.";
 help(_) ->
     "".

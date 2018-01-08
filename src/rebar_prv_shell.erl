@@ -307,7 +307,7 @@ find_apps_option(State) ->
         no_value -> no_value;
         AppsStr ->
             [ list_to_atom(AppStr)
-              || AppStr <- string:tokens(AppsStr, " ,:") ]
+              || AppStr <- rebar_string:lexemes(AppsStr, " ,:") ]
     end.
 
 -spec find_apps_rebar(rebar_state:t()) -> no_value | list().
@@ -320,6 +320,9 @@ find_apps_rebar(State) ->
 find_apps_relx(State) ->
     case lists:keyfind(release, 1, rebar_state:get(State, relx, [])) of
         {_, _, Apps} ->
+            ?DEBUG("Found shell apps from relx.", []),
+            Apps;
+        {_, _, Apps, _} ->
             ?DEBUG("Found shell apps from relx.", []),
             Apps;
         false ->

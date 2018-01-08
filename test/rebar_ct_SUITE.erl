@@ -49,6 +49,7 @@
          cfg_cover_spec/1,
          cfg_atom_suites/1,
          cover_compiled/1,
+         cover_export_name/1,
          misspecified_ct_opts/1,
          misspecified_ct_compile_opts/1,
          misspecified_ct_first_files/1,
@@ -121,7 +122,8 @@ groups() -> [{basic_app, [], [basic_app_default_dirs,
                             cmd_create_priv_dir,
                             cmd_include_dir,
                             cmd_sys_config]},
-             {cover, [], [cover_compiled]}].
+             {cover, [], [cover_compiled,
+                          cover_export_name]}].
 
 init_per_group(basic_app, Config) ->
     C = rebar_test_utils:init_rebar_state(Config, "ct_"),
@@ -1132,11 +1134,18 @@ cmd_sys_config(Config) ->
     CfgFile = filename:join([AppDir, "config", "cfg_sys.config"]),
     ok = filelib:ensure_dir(CfgFile),
     ok = file:write_file(CfgFile, cfg_sys_config_file(AppName)),
+
+    OtherCfgFile = filename:join([AppDir, "config", "other.config"]),
+    ok = filelib:ensure_dir(OtherCfgFile),
+    ok = file:write_file(OtherCfgFile, other_sys_config_file(AppName)),
+
     RebarConfig = [{ct_opts, [{sys_config, CfgFile}]}],
     {ok, State1} = rebar_test_utils:run_and_check(Config, RebarConfig, ["as", "test", "lock"], return),
 
     {ok, _} = rebar_prv_common_test:prepare_tests(State1),
     ?assertEqual({ok, cfg_value}, application:get_env(AppName, key)),
+
+    ?assertEqual({ok, other_cfg_value}, application:get_env(AppName, other_key)),
 
     Providers = rebar_state:providers(State1),
     Namespace = rebar_state:namespace(State1),
@@ -1243,6 +1252,29 @@ cover_compiled(Config) ->
     Name = ?config(name, Config),
     Mod = list_to_atom(Name),
     {file, _} = cover:is_compiled(Mod).
+
+cover_export_name(Config) ->
+    State = ?config(result, Config),
+
+    Providers = rebar_state:providers(State),
+    Namespace = rebar_state:namespace(State),
+    CommandProvider = providers:get_provider(ct, Providers, Namespace),
+    GetOptSpec = providers:opts(CommandProvider),
+    {ok, GetOptResult} = getopt:parse(GetOptSpec, ["--cover", "--cover_export_name=export_name"]),
+
+    NewState = rebar_state:command_parsed_args(State, GetOptResult),
+
+    Tests = rebar_prv_common_test:prepare_tests(NewState),
+    {ok, _} = rebar_prv_common_test:compile(NewState, Tests),
+    rebar_prv_common_test:maybe_write_coverdata(NewState),
+
+    Name = ?config(name, Config),
+    Mod = list_to_atom(Name),
+    {file, _} = cover:is_compiled(Mod),
+
+    Dir = rebar_dir:profile_dir(rebar_state:opts(NewState), [default, test]),
+    ct:pal("DIR ~s", [Dir]),
+    true = filelib:is_file(filename:join([Dir, "cover", "export_name.coverdata"])).
 
 misspecified_ct_opts(Config) ->
     C = rebar_test_utils:init_rebar_state(Config, "ct_cfg_atom_suites_"),
@@ -1400,7 +1432,7 @@ testspec_at_root(Config) ->
     CommandProvider = providers:get_provider(ct, Providers, Namespace),
     GetOptSpec = providers:opts(CommandProvider),
 
-    SpecArg1 = string:join([Spec1,Spec2,Spec3],","),
+    SpecArg1 = rebar_string:join([Spec1,Spec2,Spec3],","),
     {ok, GetOptResult1} = getopt:parse(GetOptSpec, ["--spec",SpecArg1]),
     State1 = rebar_state:command_parsed_args(State, GetOptResult1),
     Tests1 = rebar_prv_common_test:prepare_tests(State1),
@@ -1611,7 +1643,10 @@ test_suite(Name) ->
                   "some_test(_) -> ok.\n", [Name]).
 
 cmd_sys_config_file(AppName) ->
-    io_lib:format("[{~s, [{key, cmd_value}]}].", [AppName]).
+    io_lib:format("[{~ts, [{key, cmd_value}]}].", [AppName]).
 
 cfg_sys_config_file(AppName) ->
-    io_lib:format("[{~s, [{key, cfg_value}]}].", [AppName]).
+    io_lib:format("[{~ts, [{key, cfg_value}]}, \"config/other\"].", [AppName]).
+
+other_sys_config_file(AppName) ->
+    io_lib:format("[{~ts, [{other_key, other_cfg_value}]}].", [AppName]).
