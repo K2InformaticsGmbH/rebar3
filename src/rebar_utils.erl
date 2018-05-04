@@ -453,6 +453,24 @@ reread_config(ConfigList) ->
                   "and will be ignored.", [])
     end.
 
+%% @doc Given env. variable `FOO' we want to expand all references to
+%% it in `InStr'. References can have two forms: `$FOO' and `${FOO}'
+%% The end of form `$FOO' is delimited with whitespace or EOL
+-spec expand_env_variable(string(), string(), term()) -> string().
+expand_env_variable(InStr, VarName, RawVarValue) ->
+    case rebar_string:chr(InStr, $$) of
+        0 ->
+            %% No variables to expand
+            InStr;
+        _ ->
+            ReOpts = [global, unicode, {return, list}],
+            VarValue = re:replace(RawVarValue, "\\\\", "\\\\\\\\", ReOpts),
+            %% Use a regex to match/replace:
+            %% Given variable "FOO": match $FOO\s | $FOOeol | ${FOO}
+            RegEx = io_lib:format("\\\$(~ts(\\W|$)|{~ts})", [VarName, VarName]),
+            re:replace(InStr, RegEx, [VarValue, "\\2"], ReOpts)
+    end.
+
 %% ====================================================================
 %% Internal functions
 %% ====================================================================
@@ -488,11 +506,10 @@ otp_release1(Rel) ->
             %% It's fine to rely on the binary module here because we can
             %% be sure that it's available when the otp_release string does
             %% not begin with $R.
-            Size = byte_size(Vsn),
             %% The shortest vsn string consists of at least two digits
             %% followed by "\n". Therefore, it's safe to assume Size >= 3.
-            case binary:part(Vsn, {Size, -3}) of
-                <<"**\n">> ->
+            case binary:match(Vsn, <<"**">>) of
+                {Pos, _} ->
                     %% The OTP documentation mentions that a system patched
                     %% using the otp_patch_apply tool available to licensed
                     %% customers will leave a '**' suffix in the version as a
@@ -501,9 +518,9 @@ otp_release1(Rel) ->
                     %% drop the suffix, given for all intents and purposes, we
                     %% cannot obtain relevant information from it as far as
                     %% tooling is concerned.
-                    binary:bin_to_list(Vsn, {0, Size - 3});
-                _ ->
-                    binary:bin_to_list(Vsn, {0, Size - 1})
+                    binary:bin_to_list(Vsn, {0, Pos});
+                nomatch ->
+                    rebar_string:trim(binary:bin_to_list(Vsn), trailing, "\n")
             end
     end.
 
@@ -521,24 +538,6 @@ patch_on_windows(Cmd, Env) ->
                        [global, {return, list}, unicode]);
         _ ->
             Cmd
-    end.
-
-%% @doc Given env. variable `FOO' we want to expand all references to
-%% it in `InStr'. References can have two forms: `$FOO' and `${FOO}'
-%% The end of form `$FOO' is delimited with whitespace or EOL
--spec expand_env_variable(string(), string(), term()) -> string().
-expand_env_variable(InStr, VarName, RawVarValue) ->
-    case rebar_string:chr(InStr, $$) of
-        0 ->
-            %% No variables to expand
-            InStr;
-        _ ->
-            ReOpts = [global, unicode, {return, list}],
-            VarValue = re:replace(RawVarValue, "\\\\", "\\\\\\\\", ReOpts),
-            %% Use a regex to match/replace:
-            %% Given variable "FOO": match $FOO\s | $FOOeol | ${FOO}
-            RegEx = io_lib:format("\\\$(~ts(\\W|$)|{~ts})", [VarName, VarName]),
-            re:replace(InStr, RegEx, [VarValue, "\\2"], ReOpts)
     end.
 
 expand_sh_flag(return_on_error) ->
@@ -854,9 +853,17 @@ set_httpc_options(_, []) ->
     ok;
 
 set_httpc_options(Scheme, Proxy) ->
-    {ok, {_, UserInfo, Host, Port, _, _}} = http_uri:parse(Proxy),
+    URI = normalise_proxy(Scheme, Proxy),
+    {ok, {_, UserInfo, Host, Port, _, _}} = http_uri:parse(URI),
     httpc:set_options([{Scheme, {{Host, Port}, []}}], rebar),
     set_proxy_auth(UserInfo).
+
+normalise_proxy(Scheme, URI) ->
+    case re:run(URI, "://", [unicode]) of
+        nomatch when Scheme =:= https_proxy -> "https://" ++ URI;
+        nomatch when Scheme =:= proxy -> "http://" ++ URI;
+        _ -> URI
+    end.
 
 url_append_path(Url, ExtraPath) ->
      case http_uri:parse(Url) of

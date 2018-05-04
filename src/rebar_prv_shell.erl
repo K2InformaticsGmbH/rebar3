@@ -201,20 +201,27 @@ rewrite_leaders(OldUser, NewUser) ->
             lists:member(proplists:get_value(group_leader, erlang:process_info(Pid)),
                          OldMasters)],
     try
-        %% enable error_logger's tty output
-        error_logger:swap_handler(tty),
-        %% disable the simple error_logger (which may have been added multiple
-        %% times). removes at most the error_logger added by init and the
-        %% error_logger added by the tty handler
-        remove_error_handler(3),
-        %% reset the tty handler once more for remote shells
-        error_logger:swap_handler(tty)
+        case erlang:function_exported(logger, module_info, 0) of
+            false ->
+                %% Old style logger had a lock-up issue and other problems related
+                %% to group leader handling.
+                %% enable error_logger's tty output
+                error_logger:swap_handler(tty),
+                %% disable the simple error_logger (which may have been added
+                %% multiple times). removes at most the error_logger added by
+                %% init and the error_logger added by the tty handler
+                remove_error_handler(3),
+                %% reset the tty handler once more for remote shells
+                error_logger:swap_handler(tty);
+            true ->
+                %% This is no longer a problem with the logger interface
+                ok
+        end
     catch
-        E:R -> % may fail with custom loggers
-            ?DEBUG("Logger changes failed for ~p:~p (~p)", [E,R,erlang:get_stacktrace()]),
+        ?WITH_STACKTRACE(E,R,S) % may fail with custom loggers
+            ?DEBUG("Logger changes failed for ~p:~p (~p)", [E,R,S]),
             hope_for_best
     end.
-
 
 setup_paths(State) ->
     %% Add deps to path
@@ -235,9 +242,9 @@ maybe_run_script(State) ->
             File = filename:absname(RelFile),
             try run_script_file(File)
             catch
-                C:E ->
+                ?WITH_STACKTRACE(C,E,S)
                     ?ABORT("Couldn't run shell escript ~p - ~p:~p~nStack: ~p",
-                           [File, C, E, erlang:get_stacktrace()])
+                           [File, C, E, S])
             end
     end.
 
@@ -271,11 +278,11 @@ maybe_boot_apps(State) ->
     case find_apps_to_boot(State) of
         undefined ->
             %% try to read in sys.config file
-            ok = reread_config(State);
+            ok = reread_config([], State);
         Apps ->
             %% load apps, then check config, then boot them.
             load_apps(Apps),
-            ok = reread_config(State),
+            ok = reread_config(Apps, State),
             boot_apps(Apps)
     end.
 
@@ -340,11 +347,36 @@ load_apps(Apps) ->
             not lists:keymember(App, 1, application:loaded_applications())],
     ok.
 
-reread_config(State) ->
+reread_config(AppsToStart, State) ->
     case find_config(State) of
         no_config ->
             ok;
         ConfigList ->
+            %% This allows people who use applications that are also
+            %% depended on by rebar3 or its plugins to change their
+            %% configuration at runtime based on the configuration files.
+            %%
+            %% To do this, we stop apps that are already started before
+            %% reloading their configuration.
+            %%
+            %% We make an exception for apps that:
+            %%  - are not already running
+            %%  - would not be restarted (and hence would break some
+            %%    compatibility with rebar3)
+            %%  - are not in the config files and would see no config
+            %%    changes
+            %%  - are not in a blacklist, where changing their config
+            %%    would be risky to the shell or the rebar3 agent
+            %%    functionality (i.e. changing inets may break proxy
+            %%    settings, stopping `kernel' would break everything)
+            Running = [App || {App, _, _} <- application:which_applications()],
+            BlackList = [inets, stdlib, kernel, rebar],
+            _ = [application:stop(App)
+                 || Config <- ConfigList,
+                    {App, _} <- Config,
+                    lists:member(App, Running),
+                    lists:member(App, AppsToStart),
+                    not lists:member(App, BlackList)],
             _ = rebar_utils:reread_config(ConfigList),
             ok
     end.

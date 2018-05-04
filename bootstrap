@@ -24,7 +24,7 @@ main(_) ->
     bootstrap_rebar3(),
 
     %% Build rebar.app from rebar.app.src
-    {ok, App} = rebar_app_info:new(rebar, "3.5.0", filename:absname("_build/default/lib/rebar/")),
+    {ok, App} = rebar_app_info:new(rebar, "3.5.2", filename:absname("_build/default/lib/rebar/")),
     rebar_otp_app:compile(rebar_state:new(), App),
 
     %% Because we are compiling files that are loaded already we want to silence
@@ -49,7 +49,7 @@ main(_) ->
     code:add_pathsa(DepsPaths),
 
     rebar3:run(["clean", "-a"]),
-    rebar3:run(["escriptize"]),
+    rebar3:run(["as", "prod", "escriptize"]),
 
     %% Done with compile, can turn back on error logger
     error_logger:tty(true).
@@ -571,6 +571,7 @@ additional_defines() ->
     [{d, D} || {Re, D} <- [{"^[0-9]+", namespaced_types},
                            {"^R1[4|5]", deprecated_crypto},
                            {"^2", unicode_str},
+                           {"^(R|1|20)", fun_stacktrace},
                            {"^((1[8|9])|2)", rand_module}],
                is_otp_release(Re)].
 

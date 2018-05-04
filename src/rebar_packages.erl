@@ -9,6 +9,7 @@
         ,registry_checksum/2
         ,find_highest_matching/6
         ,find_highest_matching/4
+        ,find_highest_matching_/6
         ,find_all/3
         ,verify_table/1
         ,format_error/1]).
@@ -96,7 +97,12 @@ registry_dir(State) ->
     case rebar_state:get(State, rebar_packages_cdn, ?DEFAULT_CDN) of
         ?DEFAULT_CDN ->
             RegistryDir = filename:join([CacheDir, "hex", "default"]),
-            ok = filelib:ensure_dir(filename:join(RegistryDir, "placeholder")),
+            case filelib:ensure_dir(filename:join(RegistryDir, "placeholder")) of
+                ok -> ok;
+                {error, Posix} when Posix == eaccess; Posix == enoent ->
+                    ?ABORT("Could not write to ~p. Please ensure the path is writeable.",
+                           [RegistryDir])
+            end,
             {ok, RegistryDir};
         CDN ->
             case rebar_utils:url_append_path(CDN, ?REMOTE_PACKAGE_DIR) of
@@ -170,8 +176,13 @@ find_highest_matching_(Pkg, PkgVsn, Dep, Constraint, Table, State) ->
     try find_all(Dep, Table, State) of
         {ok, [Vsn]} ->
             handle_single_vsn(Pkg, PkgVsn, Dep, Vsn, Constraint);
-        {ok, [HeadVsn | VsnTail]} ->
-                            {ok, handle_vsns(Constraint, HeadVsn, VsnTail)}
+        {ok, Vsns} ->
+            case handle_vsns(Constraint, Vsns) of
+                none ->
+                    none;
+                FoundVsn ->
+                    {ok, FoundVsn}
+            end
     catch
         error:badarg ->
             none
@@ -189,16 +200,16 @@ find_all(Dep, Table, State) ->
             none
     end.
 
-handle_vsns(Constraint, HeadVsn, VsnTail) ->
+handle_vsns(Constraint, Vsns) ->
     lists:foldl(fun(Version, Highest) ->
                         case ec_semver:pes(Version, Constraint) andalso
-                            ec_semver:gt(Version, Highest) of
+                            (Highest =:= none orelse ec_semver:gt(Version, Highest)) of
                             true ->
                                 Version;
                             false ->
                                 Highest
                         end
-                end, HeadVsn, VsnTail).
+                end, none, Vsns).
 
 handle_single_vsn(Pkg, PkgVsn, Dep, Vsn, Constraint) ->
     case ec_semver:pes(Vsn, Constraint) of

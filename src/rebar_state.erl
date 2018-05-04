@@ -257,12 +257,15 @@ apply_profiles(State, Profile) when not is_list(Profile) ->
 apply_profiles(State, [default]) ->
     State;
 apply_profiles(State=#state_t{default = Defaults, current_profiles=CurrentProfiles}, Profiles) ->
+    ProvidedProfiles = lists:prefix([default|Profiles], CurrentProfiles),
     AppliedProfiles = case Profiles of
                           %% Head of list global profile is special, only for use by rebar3
                           %% It does not clash if a user does `rebar3 as global...` but when
                           %% it is the head we must make sure not to prepend `default`
                           [global | _] ->
                               Profiles;
+                          _ when ProvidedProfiles ->
+                              deduplicate(CurrentProfiles);
                           _ ->
                               deduplicate(CurrentProfiles ++ Profiles)
                       end,
@@ -415,9 +418,9 @@ create_logic_providers(ProviderModules, State0) ->
                             end
                     end, State0, ProviderModules)
     catch
-        C:T ->
-            ?DEBUG("~p: ~p ~p", [C, T, erlang:get_stacktrace()]),
-            ?CRASHDUMP("~p: ~p~n~p~n~n~p", [C, T, erlang:get_stacktrace(), State0]),
+        ?WITH_STACKTRACE(C,T,S)
+            ?DEBUG("~p: ~p ~p", [C, T, S]),
+            ?CRASHDUMP("~p: ~p~n~p~n~n~p", [C, T, S, State0]),
             throw({error, "Failed creating providers. Run with DEBUG=1 for stacktrace or consult rebar3.crashdump."})
     end.
 
